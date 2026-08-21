@@ -6,13 +6,30 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		FDD48DD4ECE24A2A870D77C9 /* KakaoMapsSDKKit in Frameworks */ = {isa = PBXBuildFile; productRef = 2C545E3AA3EE4F0784BD639C /* KakaoMapsSDKKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		594F5BFA30374068002336D5 /* SPIED_2026.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SPIED_2026.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		72AD3579D40A40F1A2A2BE8C /* Exceptions for "SPIED_2026" folder in "SPIED_2026" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 594F5BF930374068002336D5 /* SPIED_2026 */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		594F5BFC30374068002336D5 /* SPIED_2026 */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				72AD3579D40A40F1A2A2BE8C /* Exceptions for "SPIED_2026" folder in "SPIED_2026" target */,
+			);
 			path = SPIED_2026;
 			sourceTree = "<group>";
 		};
@@ -23,6 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FDD48DD4ECE24A2A870D77C9 /* KakaoMapsSDKKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -65,6 +83,7 @@
 			);
 			name = SPIED_2026;
 			packageProductDependencies = (
+				2C545E3AA3EE4F0784BD639C /* KakaoMapsSDKKit */,
 			);
 			productName = SPIED_2026;
 			productReference = 594F5BFA30374068002336D5 /* SPIED_2026.app */;
@@ -94,6 +113,9 @@
 			);
 			mainGroup = 594F5BF130374068002336D5;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				9F545903CC604F9D839F30E4 /* XCLocalSwiftPackageReference "Vendor/KakaoMapsSDK-SPM" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 594F5BFB30374068002336D5 /* Products */;
 			projectDirPath = "";
@@ -253,6 +275,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SPIED_2026/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -284,6 +307,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = SPIED_2026/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -328,6 +352,21 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		9F545903CC604F9D839F30E4 /* XCLocalSwiftPackageReference "Vendor/KakaoMapsSDK-SPM" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "Vendor/KakaoMapsSDK-SPM";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		2C545E3AA3EE4F0784BD639C /* KakaoMapsSDKKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9F545903CC604F9D839F30E4 /* XCLocalSwiftPackageReference "Vendor/KakaoMapsSDK-SPM" */;
+			productName = KakaoMapsSDKKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 594F5BF230374068002336D5 /* Project object */;
 }

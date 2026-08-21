@@ -14,12 +14,18 @@ struct WalkingPathView: View {
     @State private var isRecording = false
 
     var body: some View {
-        ZStack(alignment: .top) {
-            KakaoPathMapView(galaxy: galaxy, isActive: $isActive, isRecording: $isRecording)
-                .ignoresSafeArea()
+        VStack(spacing: 0) {
+            ZStack(alignment: .bottom) {
+                cameraView
+                statusBar
+            }
+            .aspectRatio(16.0 / 9.0, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .clipped()
 
-            statusBar
+            KakaoPathMapView(galaxy: galaxy, isActive: $isActive, isRecording: $isRecording)
         }
+        .ignoresSafeArea(edges: .bottom)
         .onAppear {
             isActive = true
             galaxy.connect()
@@ -28,6 +34,44 @@ struct WalkingPathView: View {
             isActive = false
             galaxy.disconnect()
         }
+    }
+
+    private var cameraView: some View {
+        ZStack {
+            Color.black
+
+            if let frame = galaxy.latestFrame {
+                Image(uiImage: frame)
+                    .resizable()
+                    .scaledToFit()
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.white.opacity(0.6))
+                    Text("카메라 대기 중...")
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+            }
+
+            if galaxy.latestFrame != nil {
+                VStack {
+                    HStack {
+                        Spacer()
+                        Text("\(galaxy.fps) FPS")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(.black.opacity(0.4), in: Capsule())
+                            .padding(10)
+                    }
+                    Spacer()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var statusBar: some View {

@@ -7,11 +7,18 @@
 //
 
 import SwiftUI
+import CoreLocation
 
 struct WalkingPathView: View {
     @StateObject private var galaxy = GalaxyBridgeClient(host: "192.168.0.90", port: 8080)
     @State private var isActive = true
     @State private var isRecording = false
+
+    @State private var destinationQuery = ""
+    @State private var routeCoordinates: [CLLocationCoordinate2D] = []
+    @State private var routeSummary: String?
+    @State private var routeErrorMessage: String?
+    @State private var isSearchingRoute = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,7 +30,15 @@ struct WalkingPathView: View {
             .frame(maxWidth: .infinity)
             .clipped()
 
-            KakaoPathMapView(galaxy: galaxy, isActive: $isActive, isRecording: $isRecording)
+            ZStack(alignment: .top) {
+                KakaoPathMapView(
+                    galaxy: galaxy,
+                    isActive: $isActive,
+                    isRecording: $isRecording,
+                    routeCoordinates: $routeCoordinates
+                )
+                destinationBar
+            }
         }
         .ignoresSafeArea(edges: .bottom)
         .onAppear {
@@ -33,6 +48,85 @@ struct WalkingPathView: View {
         .onDisappear {
             isActive = false
             galaxy.disconnect()
+        }
+    }
+
+    private var destinationBar: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                TextField("목적지 검색 (예: 김해대곡초등학교)", text: $destinationQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .submitLabel(.search)
+                    .onSubmit { searchRoute() }
+
+                Button {
+                    searchRoute()
+                } label: {
+                    if isSearchingRoute {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "magnifyingglass")
+                    }
+                }
+                .disabled(destinationQuery.trimmingCharacters(in: .whitespaces).isEmpty || isSearchingRoute)
+
+                if !routeCoordinates.isEmpty {
+                    Button {
+                        routeCoordinates = []
+                        routeSummary = nil
+                        routeErrorMessage = nil
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            if let routeSummary {
+                Text(routeSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let routeErrorMessage {
+                Text(routeErrorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding()
+    }
+
+    private func searchRoute() {
+        let query = destinationQuery.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return }
+        guard let currentGPS = galaxy.latestGPS else {
+            routeErrorMessage = "현재 위치를 아직 알 수 없습니다. 갤럭시 연결 후 다시 시도해주세요."
+            return
+        }
+
+        isSearchingRoute = true
+        routeErrorMessage = nil
+
+        Task {
+            do {
+                let destinationCoordinate = try await RouteService.geocode(query: query)
+                let origin = CLLocationCoordinate2D(latitude: currentGPS.latitude, longitude: currentGPS.longitude)
+                let route = try await RouteService.walkingRoute(from: origin, to: destinationCoordinate)
+
+                await MainActor.run {
+                    routeCoordinates = route.coordinates
+                    let minutes = max(1, route.durationSeconds / 60)
+                    routeSummary = "\(route.distanceMeters)m · 약 \(minutes)분"
+                    isSearchingRoute = false
+                }
+            } catch {
+                await MainActor.run {
+                    routeErrorMessage = error.localizedDescription
+                    isSearchingRoute = false
+                }
+            }
         }
     }
 

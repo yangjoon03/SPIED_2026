@@ -1,6 +1,9 @@
 .DS_Store
 *.swp
 
+## Secrets (실제 API 키 — Secrets.swift.example 참고)
+SPIED_2026/Secrets.swift
+
 ## Build generated
 build/
 DerivedData/

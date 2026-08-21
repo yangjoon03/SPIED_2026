@@ -15,6 +15,8 @@ struct KakaoPathMapView: UIViewRepresentable {
     let galaxy: GalaxyBridgeClient
     @Binding var isActive: Bool
     @Binding var isRecording: Bool
+    /// 목적지까지의 도보 경로. 비어 있으면 표시 안 함.
+    @Binding var routeCoordinates: [CLLocationCoordinate2D]
 
     func makeUIView(context: Context) -> KMViewContainer {
         let view = KMViewContainer()
@@ -31,6 +33,7 @@ struct KakaoPathMapView: UIViewRepresentable {
             context.coordinator.controller?.resetEngine()
         }
         context.coordinator.isRecording = isRecording
+        context.coordinator.updateRoute(routeCoordinates)
         context.coordinator.syncViewRect(with: uiView.bounds.size)
     }
 
@@ -52,6 +55,10 @@ final class PathMapCoordinator: NSObject, MapControllerDelegate {
     private static let poiStyleID = "currentPositionStyle"
     private static let poiHeadingStyleID = "currentPositionHeadingStyle"
     private static let poiID = "currentPositionPoi"
+    private static let routeStyleSetID = "plannedRouteStyle"
+    private static let routeShapeID = "plannedRouteShape"
+    private static let destinationPoiStyleID = "destinationMarkerStyle"
+    private static let destinationPoiID = "destinationMarkerPoi"
 
     var controller: KMController?
     /// 기본값은 기록 안 함. `KakaoPathMapView`의 `isRecording` 바인딩으로 켜고 끈다.
@@ -61,6 +68,8 @@ final class PathMapCoordinator: NSObject, MapControllerDelegate {
     private var cancellable: AnyCancellable?
     private var pathPoints: [MapPoint] = []
     private var currentPoi: Poi?
+    private var destinationPoi: Poi?
+    private var lastRoutePointCount = -1
     private var didMoveCameraOnce = false
     private weak var mapContainerView: KMViewContainer?
     /// 도보 경로 확인에 적당한 확대 수준 (이 SDK는 숫자가 클수록 더 확대됨).
@@ -108,6 +117,11 @@ final class PathMapCoordinator: NSObject, MapControllerDelegate {
         ])
         shapeManager.addPolylineStyleSet(PolylineStyleSet(styleSetID: Self.polylineStyleSetID, styles: [polylineStyle]))
 
+        let routeStyle = PolylineStyle(styles: [
+            PerLevelPolylineStyle(bodyColor: .systemOrange, bodyWidth: 6, strokeColor: .white, strokeWidth: 2, level: 0)
+        ])
+        shapeManager.addPolylineStyleSet(PolylineStyleSet(styleSetID: Self.routeStyleSetID, styles: [routeStyle]))
+
         let labelManager = mapView.getLabelManager()
         _ = labelManager.addLabelLayer(option: LabelLayerOptions(
             layerID: Self.labelLayerID,
@@ -123,6 +137,10 @@ final class PathMapCoordinator: NSObject, MapControllerDelegate {
         let headingIconStyle = PoiIconStyle(symbol: Self.makeMarkerImage(pointsDirection: true), anchorPoint: CGPoint(x: 0.5, y: 0.5))
         labelManager.addPoiStyle(PoiStyle(styleID: Self.poiHeadingStyleID, styles: [
             PerLevelPoiStyle(iconStyle: headingIconStyle, level: 0)
+        ]))
+        let destinationIconStyle = PoiIconStyle(symbol: Self.makeDestinationMarkerImage(), anchorPoint: CGPoint(x: 0.5, y: 1.0))
+        labelManager.addPoiStyle(PoiStyle(styleID: Self.destinationPoiStyleID, styles: [
+            PerLevelPoiStyle(iconStyle: destinationIconStyle, level: 0)
         ]))
 
         subscribeToGalaxy()
@@ -232,6 +250,79 @@ final class PathMapCoordinator: NSObject, MapControllerDelegate {
             // 실제 GPS 좌표를 처음 받은 시점에 도보 확대 수준으로 스냅한다.
             let cameraUpdate = CameraUpdate.make(target: point, zoomLevel: Self.walkingZoomLevel, mapView: mapView)
             mapView.moveCamera(cameraUpdate)
+        }
+    }
+
+    // MARK: - 목적지 도보 경로
+
+    /// `routeCoordinates` 바인딩이 바뀔 때마다 호출된다. GPS 스트림 때문에 매 프레임 호출되므로
+    /// 좌표 개수로만 변경 여부를 판단해 불필요한 재작업을 피한다.
+    func updateRoute(_ coordinates: [CLLocationCoordinate2D]) {
+        guard coordinates.count != lastRoutePointCount else { return }
+        lastRoutePointCount = coordinates.count
+        guard let mapView = controller?.getView("mapview") as? KakaoMap else { return }
+
+        let shapeManager = mapView.getShapeManager()
+        guard let layer = shapeManager.getShapeLayer(layerID: Self.shapeLayerID) else { return }
+
+        guard !coordinates.isEmpty else {
+            layer.getMapPolylineShape(shapeID: Self.routeShapeID)?.hide()
+            destinationPoi?.hide()
+            return
+        }
+
+        let points = coordinates.map { MapPoint(longitude: $0.longitude, latitude: $0.latitude) }
+        let line = MapPolyline(line: points, styleIndex: 0)
+        if let shape = layer.getMapPolylineShape(shapeID: Self.routeShapeID) {
+            shape.changeStyleAndData(styleID: Self.routeStyleSetID, lines: [line])
+            shape.show()
+        } else {
+            let options = MapPolylineShapeOptions(shapeID: Self.routeShapeID, styleID: Self.routeStyleSetID, zOrder: 10002)
+            options.polylines.append(line)
+            let shape = layer.addMapPolylineShape(options)
+            shape?.show()
+        }
+
+        updateDestinationMarker(at: points[points.count - 1], mapView: mapView)
+
+        let area = AreaRect(points: points)
+        mapView.moveCamera(CameraUpdate.make(area: area, levelLimit: Self.walkingZoomLevel))
+    }
+
+    private func updateDestinationMarker(at point: MapPoint, mapView: KakaoMap) {
+        let labelManager = mapView.getLabelManager()
+        if let poi = destinationPoi {
+            poi.position = point
+            poi.show()
+        } else {
+            guard let layer = labelManager.getLabelLayer(layerID: Self.labelLayerID) else { return }
+            let options = PoiOptions(styleID: Self.destinationPoiStyleID, poiID: Self.destinationPoiID)
+            options.rank = 15
+            let poi = layer.addPoi(option: options, at: point)
+            poi?.show()
+            destinationPoi = poi
+        }
+    }
+
+    private static func makeDestinationMarkerImage() -> UIImage {
+        let size = CGSize(width: 36, height: 44)
+        let renderer = UIGraphicsImageRenderer(size: size)
+        return renderer.image { _ in
+            let pin = UIBezierPath()
+            let topRadius: CGFloat = 14
+            let center = CGPoint(x: size.width / 2, y: topRadius + 2)
+            pin.addArc(withCenter: center, radius: topRadius, startAngle: .pi * 0.85, endAngle: .pi * 0.15, clockwise: false)
+            pin.addLine(to: CGPoint(x: size.width / 2, y: size.height - 2))
+            pin.close()
+            UIColor.systemOrange.setFill()
+            pin.fill()
+            UIColor.white.setStroke()
+            pin.lineWidth = 2
+            pin.stroke()
+
+            let dotRect = CGRect(x: center.x - 5, y: center.y - 5, width: 10, height: 10)
+            UIColor.white.setFill()
+            UIBezierPath(ovalIn: dotRect).fill()
         }
     }
 

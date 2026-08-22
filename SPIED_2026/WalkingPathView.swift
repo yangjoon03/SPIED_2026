@@ -10,7 +10,8 @@ import SwiftUI
 import CoreLocation
 
 struct WalkingPathView: View {
-    @StateObject private var galaxy = GalaxyBridgeClient(host: "192.168.0.90", port: 8080)
+    @StateObject private var galaxy = GalaxyBridgeClient(host: "192.168.50.50", port: 8080)
+    @StateObject private var segmentation = SegmentationController()
     @State private var isActive = true
     @State private var isRecording = false
 
@@ -48,6 +49,7 @@ struct WalkingPathView: View {
         .onDisappear {
             isActive = false
             galaxy.disconnect()
+            segmentation.stop()
         }
     }
 
@@ -134,7 +136,11 @@ struct WalkingPathView: View {
         ZStack {
             Color.black
 
-            if let frame = galaxy.latestFrame {
+            if segmentation.isEnabled, let vis = segmentation.visualizationImage {
+                Image(uiImage: vis)
+                    .resizable()
+                    .scaledToFit()
+            } else if let frame = galaxy.latestFrame {
                 Image(uiImage: frame)
                     .resizable()
                     .scaledToFit()
@@ -153,13 +159,18 @@ struct WalkingPathView: View {
                 VStack {
                     HStack {
                         Spacer()
-                        Text("\(galaxy.fps) FPS")
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.black.opacity(0.4), in: Capsule())
-                            .padding(10)
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text("\(galaxy.fps) FPS")
+                            if segmentation.isEnabled {
+                                Text("감지 \(segmentation.detectionCount)개 · \(Int(segmentation.inferenceMs.rounded()))ms · \(String(format: "%.1f", segmentation.effectiveFPS))fps")
+                            }
+                        }
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(.black.opacity(0.4), in: Capsule())
+                        .padding(10)
                     }
                     Spacer()
                 }
@@ -208,10 +219,35 @@ struct WalkingPathView: View {
                 .font(.subheadline.bold())
                 .foregroundStyle(isRecording ? .red : .accentColor)
             }
+
+            HStack {
+                Text(segmentationStatusText)
+                    .font(.caption)
+                    .foregroundStyle(segmentation.errorMessage != nil ? .red : .secondary)
+
+                Spacer()
+
+                Button(segmentation.isEnabled ? "AI 인식 중지" : "AI 인식 시작") {
+                    if segmentation.isEnabled {
+                        segmentation.stop()
+                    } else {
+                        segmentation.start(galaxy: galaxy)
+                    }
+                }
+                .font(.subheadline.bold())
+                .foregroundStyle(segmentation.isEnabled ? .red : .accentColor)
+            }
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
         .padding()
+    }
+
+    private var segmentationStatusText: String {
+        if let errorMessage = segmentation.errorMessage {
+            return "AI 인식 오류: \(errorMessage)"
+        }
+        return segmentation.isEnabled ? "AI 인식 켜짐" : "AI 인식 꺼짐"
     }
 }
 

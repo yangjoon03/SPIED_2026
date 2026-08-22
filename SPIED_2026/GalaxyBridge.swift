@@ -79,7 +79,7 @@ final class GalaxyBridgeClient: NSObject, ObservableObject {
     // 호스트명이 간헐적으로 실패해서(dns-sd로 직접 확인함) 다시 IP로 되돌림.
     // Mac의 IP가 바뀌면 `ipconfig getifaddr en0`으로 확인해서 여기를 갱신해야 한다.
     // 서버(galaxy-bridge/server.js)가 HTTPS/WSS로 떠 있으므로 wss:// 로 접속해야 합니다.
-    init(host: String = "192.168.0.90", port: Int = 8080) {
+    init(host: String = "192.168.50.50", port: Int = 8080) {
         serverURL = URL(string: "wss://\(host):\(port)/xcode")!
     }
 

@@ -298,7 +298,11 @@ final class SegmentationController: ObservableObject {
             if let last = lastHeadingDeviationAnnounceTime, now.timeIntervalSince(last) < Self.headingDeviationCooldown { return }
             lastHeadingDeviationAnnounceTime = now
 
-            let correction = deviation > 0 ? "left" : "right"
+            // signedAngularDifference는 "양수 = 시계방향(오른쪽)"을 가정하지만, 실제 heading은
+            // 웹앱이 표준 deviceorientation의 alpha를 그대로 쓰고 있어서 반시계 방향으로
+            // 증가한다(실제 나침반과 반대) — 그래서 deviation의 부호가 실제 좌/우와 반대로
+            // 나온다. 보정 방향을 뒤집어서 실제 나침반 기준으로 맞는 좌/우를 안내한다.
+            let correction = deviation > 0 ? "right" : "left"
             announcer?.speakCaution("You are drifting off course. Turn \(correction) to go straight.")
         }
     }

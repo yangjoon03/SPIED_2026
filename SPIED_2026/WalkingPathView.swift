@@ -10,7 +10,7 @@ import SwiftUI
 import CoreLocation
 
 struct WalkingPathView: View {
-    @StateObject private var galaxy = GalaxyBridgeClient(host: "192.168.50.50", port: 8080)
+    @StateObject private var galaxy = GalaxyBridgeClient(host: "192.168.0.90", port: 8080)
     @StateObject private var segmentation = SegmentationController()
     @StateObject private var announcer = DetectionAnnouncer()
     @StateObject private var voiceFinder = VoiceFinderController()

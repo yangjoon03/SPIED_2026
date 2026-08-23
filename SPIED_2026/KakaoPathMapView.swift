@@ -230,6 +230,13 @@ final class PathMapCoordinator: NSObject, MapControllerDelegate {
             } else {
                 poi.changeStyle(styleID: Self.poiStyleID)
             }
+            // updateRoute()가 목적지 검색 후 경로 전체가 보이게 moveCamera로 카메라를
+            // 직접 옮기면, SDK가 그걸 "사용자가 수동으로 지도를 조작한 것"으로 보고
+            // 자동 추적을 끊어버린다. 그 뒤로는 GPS가 계속 들어와도 카메라가 다시는
+            // 안 따라와서(마커 자체는 정상 갱신되는데도 화면 밖에 있는 것처럼 보임),
+            // GPS가 안 되는 것처럼 오인하게 된다. 그래서 매 GPS 업데이트마다
+            // 추적을 다시 걸어줘서 항상 실시간 위치를 따라가게 한다.
+            mapView.getTrackingManager().startTrackingPoi(poi)
         } else {
             guard let layer = labelManager.getLabelLayer(layerID: Self.labelLayerID) else { return }
             let initialStyleID = heading != nil ? Self.poiHeadingStyleID : Self.poiStyleID

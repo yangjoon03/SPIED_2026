@@ -1,29 +1,44 @@
 //
-//  WalkingPathView.swift
+//  ReplayView.swift
 //  SPIED_2026
 //
-//  Screen that shows the pedestrian path traced from the Galaxy phone's
-//  live GPS stream on a KakaoMap.
+//  WalkingPathView와 동일한 레이아웃(위: 카메라, 아래: 지도)이지만, 라이브 갤럭시
+//  스트림 대신 녹화된 mp4 + 센서/GPS JSON 타임라인을 재생해서 같은 AI 파이프라인
+//  (SegmentationController/DetectionAnnouncer/VoiceFinderController)에 흘려보낸다.
+//
+//  녹화 파일은 galaxy-bridge 웹페이지의 "🔴 녹화" 기능으로 만들어지며(webm + json),
+//  webm은 iOS가 디코딩 못 하므로 미리 mp4로 변환해서 넣어야 한다:
+//    ffmpeg -i in.webm -c:v libx264 -pix_fmt yuv420p out.mp4
 //
 
 import SwiftUI
-import CoreLocation
+import UniformTypeIdentifiers
 
-struct WalkingPathView: View {
-    @StateObject private var galaxy = GalaxyBridgeClient(host: "192.168.50.50", port: 8080)
+struct ReplayView: View {
+    @StateObject private var replay = ReplayController()
     @StateObject private var segmentation = SegmentationController()
     @StateObject private var announcer = DetectionAnnouncer()
     @StateObject private var voiceFinder = VoiceFinderController()
-    @State private var isActive = true
-    @State private var isRecording = false
     @State private var isAccessibilityMode = false
     @State private var showSettings = false
+    @State private var isMapActive = true
 
-    @State private var destinationQuery = ""
-    @State private var routeCoordinates: [CLLocationCoordinate2D] = []
-    @State private var routeSummary: String?
-    @State private var routeErrorMessage: String?
-    @State private var isSearchingRoute = false
+    @State private var pickedVideoURL: URL?
+    @State private var pickedJSONURL: URL?
+    /// .fileImporter를 두 개 겹쳐서 달면(영상용/데이터용 각각) SwiftUI가 안쪽 것을
+    /// 제대로 못 띄우는 알려진 이슈가 있어서, 하나의 상태로 어떤 걸 고르는 중인지만
+    /// 구분하고 fileImporter는 하나만 쓴다.
+    /// isPickerPresented와 별도로 둔다 — 같은 바인딩의 get/set에서 activePicker를
+    /// 같이 건드리면, "피커 닫힘"과 "선택 결과 completion" 두 콜백의 호출 순서가
+    /// 보장되지 않아 completion이 실행될 때 activePicker가 이미 nil이 되어 결과를
+    /// 잃어버리는 경쟁 상태가 생긴다(실제로 이 버그로 선택한 파일이 유실됐었음).
+    @State private var activePicker: PickerTarget?
+    @State private var isPickerPresented = false
+
+    private enum PickerTarget: Identifiable {
+        case video, json
+        var id: Self { self }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,31 +53,42 @@ struct WalkingPathView: View {
 
             ZStack(alignment: .top) {
                 KakaoPathMapView(
-                    galaxy: galaxy,
-                    isActive: $isActive,
-                    isRecording: $isRecording,
-                    routeCoordinates: $routeCoordinates
+                    galaxy: replay.galaxy,
+                    isActive: $isMapActive,
+                    isRecording: .constant(false),
+                    routeCoordinates: .constant([])
                 )
-                destinationBar
+                playbackBar
             }
         }
         .ignoresSafeArea(edges: .bottom)
         .onAppear {
-            isActive = true
-            galaxy.connect()
             voiceFinder.requestAuthorization()
             voiceFinder.detectionsProvider = { segmentation.detections }
         }
         .onDisappear {
-            isActive = false
-            galaxy.disconnect()
+            replay.pause()
             segmentation.stop()
             voiceFinder.stopListening()
         }
         .sheet(isPresented: $showSettings) { settingsSheet }
+        .fileImporter(
+            isPresented: $isPickerPresented,
+            // Safari로 다운로드된 파일은 확장자가 .json이어도 시스템 UTI 태그가
+            // application/octet-stream 등으로 붙어서 [.json] 단독 필터에는 안 보일 수 있다.
+            // .data(범용 바이너리)를 같이 허용해 그런 경우에도 목록에 뜨게 한다.
+            allowedContentTypes: activePicker == .json ? [.json, .data] : [.movie]
+        ) { result in
+            switch activePicker {
+            case .video: handlePicked(result) { pickedVideoURL = $0 }
+            case .json: handlePicked(result) { pickedJSONURL = $0 }
+            case nil: break
+            }
+            activePicker = nil
+        }
     }
 
-    // MARK: - 카메라 오버레이 (최소한만: 연결 표시, 설정 버튼, FPS, 핵심 액션 버튼)
+    // MARK: - 카메라 오버레이 (라이브 화면과 동일)
 
     private var cameraView: some View {
         ZStack {
@@ -72,16 +98,16 @@ struct WalkingPathView: View {
                 Image(uiImage: vis)
                     .resizable()
                     .scaledToFit()
-            } else if let frame = galaxy.latestFrame {
+            } else if let frame = replay.galaxy.latestFrame {
                 Image(uiImage: frame)
                     .resizable()
                     .scaledToFit()
             } else {
                 VStack(spacing: 10) {
-                    Image(systemName: "camera.fill")
+                    Image(systemName: "play.rectangle")
                         .font(.system(size: 36))
                         .foregroundStyle(.white.opacity(0.6))
-                    Text("카메라 대기 중...")
+                    Text(replay.isLoaded ? "재생 버튼을 눌러주세요" : "녹화 파일을 불러와주세요")
                         .font(.subheadline)
                         .foregroundStyle(.white.opacity(0.6))
                 }
@@ -94,7 +120,7 @@ struct WalkingPathView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Circle()
-                                .fill(galaxy.isConnected ? Color.green : Color.red)
+                                .fill(replay.isLoaded ? Color.green : Color.gray)
                                 .frame(width: 8, height: 8)
                             Image(systemName: "gearshape.fill")
                         }
@@ -107,9 +133,9 @@ struct WalkingPathView: View {
 
                     Spacer()
 
-                    if galaxy.latestFrame != nil {
+                    if replay.galaxy.latestFrame != nil {
                         VStack(alignment: .trailing, spacing: 4) {
-                            Text("\(galaxy.fps) FPS")
+                            Text("\(replay.galaxy.fps) FPS")
                             if segmentation.isEnabled {
                                 Text("감지 \(segmentation.detectionCount)개 · \(Int(segmentation.inferenceMs.rounded()))ms · \(String(format: "%.1f", segmentation.effectiveFPS))fps")
                             }
@@ -128,7 +154,6 @@ struct WalkingPathView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    /// 일반 모드에서는 스피커(수동 안내), 시각장애인 모드에서는 마이크(음성 명령) 버튼.
     private var primaryActionButton: some View {
         Button {
             if isAccessibilityMode {
@@ -163,35 +188,114 @@ struct WalkingPathView: View {
         isAccessibilityMode && voiceFinder.isListening ? .red : .accentColor
     }
 
+    // MARK: - 재생 컨트롤 (지도 위 오버레이)
+
+    private var playbackBar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Button("영상 선택") { activePicker = .video; isPickerPresented = true }
+                Button("데이터 선택") { activePicker = .json; isPickerPresented = true }
+                Spacer()
+                Button("불러오기") {
+                    guard let video = pickedVideoURL, let json = pickedJSONURL else { return }
+                    replay.load(videoURL: video, jsonURL: json)
+                }
+                .disabled(pickedVideoURL == nil || pickedJSONURL == nil)
+            }
+            .font(.caption)
+
+            if let name = pickedVideoURL?.lastPathComponent {
+                Text("영상: \(name)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+            if let name = pickedJSONURL?.lastPathComponent {
+                Text("데이터: \(name)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+            }
+
+            if let errorMessage = replay.errorMessage {
+                Text(errorMessage).font(.caption).foregroundStyle(.red)
+            }
+
+            if replay.isLoaded {
+                HStack {
+                    Button {
+                        if replay.isPlaying { replay.pause() } else { replay.play() }
+                    } label: {
+                        Image(systemName: replay.isPlaying ? "pause.fill" : "play.fill")
+                    }
+                    Button {
+                        replay.reset()
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                    }
+
+                    ProgressView(value: replay.progress)
+
+                    Text("\(formatTime(replay.elapsedSeconds)) / \(formatTime(replay.durationSeconds))")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding()
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        let total = Int(seconds)
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
+    private func handlePicked(_ result: Result<URL, Error>, assign: (URL) -> Void) {
+        switch result {
+        case .success(let url):
+            do {
+                assign(try copyToLocalTemp(from: url))
+            } catch {
+                replay.errorMessage = "파일을 불러오지 못했습니다: \(error.localizedDescription)"
+            }
+        case .failure(let error):
+            replay.errorMessage = "파일 선택 실패: \(error.localizedDescription)"
+        }
+    }
+
+    /// 피커로 고른 파일은 보안 스코프 접근이라 나중에(재생 중) 접근이 끊길 수 있으므로,
+    /// 앱 tmp 디렉토리로 즉시 복사해서 안정적으로 계속 읽을 수 있게 한다.
+    private func copyToLocalTemp(from url: URL) throws -> URL {
+        let accessed = url.startAccessingSecurityScopedResource()
+        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+
+        let destination = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathExtension(url.pathExtension)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.removeItem(at: destination)
+        }
+        try FileManager.default.copyItem(at: url, to: destination)
+        return destination
+    }
+
     // MARK: - 설정 시트
 
     private var settingsSheet: some View {
         NavigationStack {
             List {
-                Section("갤럭시 연결") {
+                Section("재생 상태") {
                     HStack {
                         Circle()
-                            .fill(galaxy.isConnected ? Color.green : Color.red)
+                            .fill(replay.isLoaded ? Color.green : Color.gray)
                             .frame(width: 10, height: 10)
-                        Text(galaxy.isConnected ? "연결됨" : "연결 안 됨")
-                        Spacer()
-                        Button(galaxy.isConnected ? "연결 해제" : "연결") {
-                            if galaxy.isConnected {
-                                galaxy.disconnect()
-                            } else {
-                                galaxy.connect()
-                            }
-                        }
+                        Text(replay.isLoaded ? "녹화 파일 로드됨" : "로드된 파일 없음")
                     }
-                    if let gps = galaxy.latestGPS {
+                    if let name = replay.loadedFileName {
+                        Text(name).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let gps = replay.galaxy.latestGPS {
                         Text(String(format: "%.5f, %.5f", gps.latitude, gps.longitude))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                }
-
-                Section("경로 기록") {
-                    Toggle("도보 경로 기록", isOn: $isRecording)
                 }
 
                 Section("AI 인식") {
@@ -199,7 +303,7 @@ struct WalkingPathView: View {
                         get: { segmentation.isEnabled },
                         set: { newValue in
                             if newValue {
-                                segmentation.start(galaxy: galaxy, announcer: announcer)
+                                segmentation.start(galaxy: replay.galaxy, announcer: announcer)
                             } else {
                                 segmentation.stop()
                             }
@@ -236,7 +340,7 @@ struct WalkingPathView: View {
                     }
                 }
             }
-            .navigationTitle("설정")
+            .navigationTitle("재생 테스트 설정")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
@@ -252,89 +356,8 @@ struct WalkingPathView: View {
         if !voiceFinder.lastAnswer.isEmpty { return voiceFinder.lastAnswer }
         return segmentation.isEnabled ? "카메라 화면의 마이크 버튼을 누르고 “find door”처럼 말해보세요" : "AI 인식을 켜야 사용 가능"
     }
-
-    // MARK: - 목적지 검색 (지도 위 오버레이)
-
-    private var destinationBar: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                TextField("목적지 검색 (예: 김해대곡초등학교)", text: $destinationQuery)
-                    .textFieldStyle(.roundedBorder)
-                    .submitLabel(.search)
-                    .onSubmit { searchRoute() }
-
-                Button {
-                    searchRoute()
-                } label: {
-                    if isSearchingRoute {
-                        ProgressView()
-                    } else {
-                        Image(systemName: "magnifyingglass")
-                    }
-                }
-                .disabled(destinationQuery.trimmingCharacters(in: .whitespaces).isEmpty || isSearchingRoute)
-
-                if !routeCoordinates.isEmpty {
-                    Button {
-                        routeCoordinates = []
-                        routeSummary = nil
-                        routeErrorMessage = nil
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
-            if let routeSummary {
-                Text(routeSummary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if let routeErrorMessage {
-                Text(routeErrorMessage)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-        }
-        .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .padding()
-    }
-
-    private func searchRoute() {
-        let query = destinationQuery.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return }
-        guard let currentGPS = galaxy.latestGPS else {
-            routeErrorMessage = "현재 위치를 아직 알 수 없습니다. 갤럭시 연결 후 다시 시도해주세요."
-            return
-        }
-
-        isSearchingRoute = true
-        routeErrorMessage = nil
-
-        Task {
-            do {
-                let destinationCoordinate = try await RouteService.geocode(query: query)
-                let origin = CLLocationCoordinate2D(latitude: currentGPS.latitude, longitude: currentGPS.longitude)
-                let route = try await RouteService.walkingRoute(from: origin, to: destinationCoordinate)
-
-                await MainActor.run {
-                    routeCoordinates = route.coordinates
-                    let minutes = max(1, route.durationSeconds / 60)
-                    routeSummary = "\(route.distanceMeters)m · 약 \(minutes)분"
-                    isSearchingRoute = false
-                }
-            } catch {
-                await MainActor.run {
-                    routeErrorMessage = error.localizedDescription
-                    isSearchingRoute = false
-                }
-            }
-        }
-    }
 }
 
 #Preview {
-    WalkingPathView()
+    ReplayView()
 }

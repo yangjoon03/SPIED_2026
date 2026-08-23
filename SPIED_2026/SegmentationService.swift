@@ -10,7 +10,13 @@ import UIKit
 
 struct SegmentationDetection: Decodable {
     let class_name: String
+    let class_name_en: String
     let confidence: Double
+    /// 이미지 안에서의 좌우 위치: "left" / "center" / "right"
+    let position: String
+    /// 이미지 안에서의 세로 위치(대략적인 거리감): "near"(화면 아래, 가까움) /
+    /// "mid" / "far"(화면 위, 멀리 뻗어있음)
+    let depth: String
 }
 
 struct SegmentationResult: Decodable {

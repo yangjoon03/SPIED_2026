@@ -42,7 +42,7 @@ enum SegmentationServiceError: Error, LocalizedError {
 enum SegmentationService {
     // 이 Mac에서 로컬로 돌리는 세그멘테이션 서버(galaxy-bridge/local_segmentation_server.py).
     // Mac IP가 바뀌면 GalaxyBridge.swift/WalkingPathView.swift와 마찬가지로 여기도 갱신 필요.
-    private static let baseURL = "http://192.168.0.90:8002"
+    private static let baseURL = "http://192.168.65.240:8002"
 
     static func predict(image: UIImage, confidence: Double = 0.25) async throws -> SegmentationResult {
         guard let jpegData = image.jpegData(compressionQuality: 0.85) else {

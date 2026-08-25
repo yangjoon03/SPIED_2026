@@ -10,10 +10,11 @@ import SwiftUI
 import CoreLocation
 
 struct WalkingPathView: View {
-    @StateObject private var galaxy = GalaxyBridgeClient(host: "192.168.0.90", port: 8080)
+    @StateObject private var galaxy = GalaxyBridgeClient(host: "192.168.65.240", port: 8080)
     @StateObject private var segmentation = SegmentationController()
     @StateObject private var announcer = DetectionAnnouncer()
     @StateObject private var voiceFinder = VoiceFinderController()
+    @StateObject private var arduino = ArduinoSocket()
     @State private var isActive = true
     @State private var isRecording = false
     @State private var isAccessibilityMode = false
@@ -26,6 +27,38 @@ struct WalkingPathView: View {
     @State private var isSearchingRoute = false
 
     var body: some View {
+        GeometryReader { geo in
+            if geo.size.width > geo.size.height {
+                landscapeLayout(width: geo.size.width, height: geo.size.height)
+            } else {
+                portraitLayout
+            }
+        }
+        .ignoresSafeArea(edges: .bottom)
+        .onAppear {
+            isActive = true
+            galaxy.connect()
+            arduino.connect()
+            voiceFinder.requestAuthorization()
+            voiceFinder.detectionsProvider = { segmentation.detections }
+        }
+        .onDisappear {
+            isActive = false
+            galaxy.disconnect()
+            arduino.disconnect()
+            segmentation.stop()
+            voiceFinder.stopListening()
+        }
+        .onChange(of: arduino.remaining) { _, newValue in
+            // 방향이 맞고 틀리고를 떠나, 그냥 느려서 1초밖에 안 남았는데 아직
+            // 다 못 건넌 상태(tracking 중)면 방향 이탈 여부와 무관하게 연장한다.
+            guard arduino.trafficState == "GREEN", newValue == 1, segmentation.isCrossingInProgress else { return }
+            arduino.extendGreen()
+        }
+        .sheet(isPresented: $showSettings) { settingsSheet }
+    }
+
+    private var portraitLayout: some View {
         VStack(spacing: 0) {
             ZStack(alignment: .bottom) {
                 cameraView
@@ -46,20 +79,36 @@ struct WalkingPathView: View {
                 destinationBar
             }
         }
-        .ignoresSafeArea(edges: .bottom)
-        .onAppear {
-            isActive = true
-            galaxy.connect()
-            voiceFinder.requestAuthorization()
-            voiceFinder.detectionsProvider = { segmentation.detections }
+    }
+
+    /// 가로모드: 왼쪽에 카메라를 최대한 크게, 오른쪽은 위쪽에 음성 안내 로그 /
+    /// 아래쪽에 지도를 배치한다.
+    private func landscapeLayout(width: CGFloat, height: CGFloat) -> some View {
+        HStack(spacing: 0) {
+            ZStack(alignment: .bottom) {
+                cameraView
+                primaryActionButton
+                    .padding(.bottom, 14)
+            }
+            .frame(width: width * 0.6)
+            .clipped()
+
+            VStack(spacing: 0) {
+                VoiceLogView(announcer: announcer)
+                    .frame(height: height * 0.3)
+
+                ZStack(alignment: .top) {
+                    KakaoPathMapView(
+                        galaxy: galaxy,
+                        isActive: $isActive,
+                        isRecording: $isRecording,
+                        routeCoordinates: $routeCoordinates
+                    )
+                    destinationBar
+                }
+            }
+            .frame(width: width * 0.4)
         }
-        .onDisappear {
-            isActive = false
-            galaxy.disconnect()
-            segmentation.stop()
-            voiceFinder.stopListening()
-        }
-        .sheet(isPresented: $showSettings) { settingsSheet }
     }
 
     // MARK: - 카메라 오버레이 (최소한만: 연결 표시, 설정 버튼, FPS, 핵심 액션 버튼)
@@ -107,11 +156,21 @@ struct WalkingPathView: View {
 
                     Spacer()
 
-                    if galaxy.latestFrame != nil {
+                    if galaxy.latestFrame != nil || arduino.isConnected {
                         VStack(alignment: .trailing, spacing: 4) {
-                            Text("\(galaxy.fps) FPS")
-                            if segmentation.isEnabled {
-                                Text("감지 \(segmentation.detectionCount)개 · \(Int(segmentation.inferenceMs.rounded()))ms · \(String(format: "%.1f", segmentation.effectiveFPS))fps")
+                            if galaxy.latestFrame != nil {
+                                Text("\(galaxy.fps) FPS")
+                                if segmentation.isEnabled {
+                                    Text("감지 \(segmentation.detectionCount)개 · \(Int(segmentation.inferenceMs.rounded()))ms · \(String(format: "%.1f", segmentation.effectiveFPS))fps")
+                                }
+                            }
+                            if arduino.isConnected {
+                                HStack(spacing: 4) {
+                                    Circle()
+                                        .fill(trafficLightColor)
+                                        .frame(width: 8, height: 8)
+                                    Text("\(arduino.trafficState) \(arduino.remaining)s")
+                                }
                             }
                         }
                         .font(.caption.monospacedDigit())
@@ -126,6 +185,15 @@ struct WalkingPathView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var trafficLightColor: Color {
+        switch arduino.trafficState {
+        case "GREEN": return .green
+        case "YELLOW": return .yellow
+        case "RED": return .red
+        default: return .gray
+        }
     }
 
     /// 일반 모드에서는 스피커(수동 안내), 시각장애인 모드에서는 마이크(음성 명령) 버튼.
@@ -190,6 +258,31 @@ struct WalkingPathView: View {
                     }
                 }
 
+                Section("횡단보도 신호 하드웨어") {
+                    HStack {
+                        Circle()
+                            .fill(arduino.isConnected ? Color.green : Color.red)
+                            .frame(width: 10, height: 10)
+                        Text(arduino.isConnected ? "연결됨" : "연결 안 됨")
+                        Spacer()
+                        Button(arduino.isConnected ? "연결 해제" : "연결") {
+                            if arduino.isConnected {
+                                arduino.disconnect()
+                            } else {
+                                arduino.connect()
+                            }
+                        }
+                    }
+                    if arduino.isConnected {
+                        Text("신호: \(arduino.trafficState) · 남은 시간 \(arduino.remaining)초")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("이탈 경고가 뜨면 보행 신호(초록불)를 5초씩 자동 연장합니다 (최대 4회).")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("경로 기록") {
                     Toggle("도보 경로 기록", isOn: $isRecording)
                 }
@@ -199,7 +292,7 @@ struct WalkingPathView: View {
                         get: { segmentation.isEnabled },
                         set: { newValue in
                             if newValue {
-                                segmentation.start(galaxy: galaxy, announcer: announcer)
+                                segmentation.start(galaxy: galaxy, announcer: announcer, arduino: arduino)
                             } else {
                                 segmentation.stop()
                             }

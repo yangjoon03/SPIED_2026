@@ -121,7 +121,6 @@ final class ReplayController: ObservableObject {
 
     private func runPlayback(timeline: RecordingTimeline) async {
         guard let generator = imageGenerator else { return }
-        let frameInterval = 1.0 / max(timeline.camFps, 1)
         let startWallClock = Date()
         let startElapsed = elapsedSeconds
 
@@ -155,6 +154,11 @@ final class ReplayController: ObservableObject {
                 lastFpsMark = now
             }
 
+            // 프레임을 너무 촘촘하게 갱신하면(무제한) 횡단보도가 아주 잠깐씩만 잡혀도
+            // "계속 보이는" 것으로 취급되어 gone-early(2초 이상 미확인) 경고가 사실상
+            // 절대 발동하지 않는 회귀가 있었다(04에서 확인). 원본 녹화 fps(camFps)에
+            // 맞춰 다시 갱신 속도를 묶는다.
+            let frameInterval = 1.0 / max(timeline.camFps, 1)
             let sleepSeconds = max(frameInterval / max(playbackSpeed, 0.01), 0.01)
             try? await Task.sleep(nanoseconds: UInt64(sleepSeconds * 1_000_000_000))
         }

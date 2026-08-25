@@ -32,6 +32,9 @@ final class SegmentationController: ObservableObject {
     private var loopTask: Task<Void, Never>?
     private weak var galaxy: GalaxyBridgeClient?
     private weak var announcer: DetectionAnnouncer?
+    /// 이탈(방향 틀림) 경고가 뜰 때마다 하드웨어 보행 신호(초록불)를 5초씩 연장해달라고
+    /// 알려준다. 신호 자체를 몇 번까지 늘릴지는 아두이노 펌웨어가 알아서 제한한다(최대 4회).
+    private weak var arduino: ArduinoSocket?
     private var lastResultTime: Date?
     private var lastCautionTime: Date?
     private var lastBrailleGuidanceTime: Date?
@@ -86,6 +89,13 @@ final class SegmentationController: ObservableObject {
     private static let minimumCrossingDuration: TimeInterval = 4.0
 
     private var crosswalkState: TrackingState = .idle
+    /// 지금 횡단보도를 건너는 중(tracking 확정 상태)인지 — 방향이 맞든 틀리든, 아직 다
+    /// 건넜다고 판단되지 않은 상태다. 하드웨어 신호 연장 여부 판단(느려도 연장) 등
+    /// 뷰 쪽에서 참조한다.
+    var isCrossingInProgress: Bool {
+        if case .tracking = crosswalkState { return true }
+        return false
+    }
     private var smoothedHeading: Double?
     private var lastCrosswalkSeenTime: Date?
     private var surfaceOnlyLastSeen: Date?
@@ -94,23 +104,33 @@ final class SegmentationController: ObservableObject {
     /// tracking으로 확정된 시점. "아직 정상적으로 다 건넜을 시간이 안 지났다"를 판단하는 기준.
     private var trackingStartTime: Date?
 
-    func start(galaxy: GalaxyBridgeClient, announcer: DetectionAnnouncer?) {
+    func start(galaxy: GalaxyBridgeClient, announcer: DetectionAnnouncer?, arduino: ArduinoSocket? = nil) {
         self.galaxy = galaxy
         self.announcer = announcer
+        self.arduino = arduino
         isEnabled = true
         errorMessage = nil
         lastResultTime = nil
         lastCautionTime = nil
+        resetCrosswalkTracking()
+        loopTask?.cancel()
+        loopTask = Task { [weak self] in
+            await self?.runLoop()
+        }
+    }
+
+    /// 횡단보도 추적 상태만 초기화한다. 재생 테스트에서 다른 녹화로 새로 불러올 때
+    /// 반드시 호출해야 한다 — 안 그러면 AI 인식을 계속 켜둔 채로 파일만 바꿨을 때
+    /// 이전 영상에서 확정된 tracking 상태가 새 영상으로 그대로 넘어와서, 새 영상엔
+    /// 없는 횡단보도를 "갑자기 안 보인다"고 잘못 경고하게 된다.
+    func resetCrosswalkTracking() {
         crosswalkState = .idle
         smoothedHeading = nil
         lastCrosswalkSeenTime = nil
         surfaceOnlyLastSeen = nil
         headingDeviationStartTime = nil
+        lastHeadingDeviationAnnounceTime = nil
         trackingStartTime = nil
-        loopTask?.cancel()
-        loopTask = Task { [weak self] in
-            await self?.runLoop()
-        }
     }
 
     func stop() {
@@ -262,6 +282,15 @@ final class SegmentationController: ObservableObject {
             }
 
         case .tracking(let referenceHeading):
+            // 이 상태로 확정되는 데는 (경사로 corroboration이 없는 surfaceOnly 경로에서는)
+            // 아주 짧고 확신도 낮은 감지 한두 번이면 충분하다. 실제 서버로 5개 테스트
+            // 영상을 다 돌려본 결과, 이 "짧고 약한 신호"는 05번처럼 진짜로 잠깐 스쳐 지나가는
+            // 이탈 상황에서도, 01/03번처럼 완전히 정상인 보행에서 모델이 순간적으로 오탐할 때도
+            // 똑같은 모양(연속 1~2프레임, confidence 0.25~0.55)으로 나타나서 신호만으로는
+            // 구분이 안 된다. 확정 기준을 더 엄격하게(예: 2번 이상 재확인) 하면 01/03의
+            // 오탐은 줄지만 05 같은 진짜 이탈을 그대로 놓친다 — 실험으로 확인됨. 사용자 판단으로
+            // "짧은 진짜 이탈을 놓치지 않는 것"을 "정상 보행에서 가끔 뜨는 오탐 경고"보다
+            // 우선하기로 하고 현재 민감도를 그대로 유지한다.
             if sawAnyTrackingClass {
                 lastCrosswalkSeenTime = now
             } else if let lastSeen = lastCrosswalkSeenTime, now.timeIntervalSince(lastSeen) > Self.crosswalkTrackingTimeout {
@@ -279,6 +308,7 @@ final class SegmentationController: ObservableObject {
                     || now.timeIntervalSince(lastHeadingDeviationAnnounceTime!) >= Self.headingDeviationCooldown {
                     lastHeadingDeviationAnnounceTime = now
                     announcer?.speakCaution("Crosswalk no longer visible. You may be walking off course.")
+                    arduino?.extendGreen()
                 }
                 return
             }
@@ -304,6 +334,7 @@ final class SegmentationController: ObservableObject {
             // 나온다. 보정 방향을 뒤집어서 실제 나침반 기준으로 맞는 좌/우를 안내한다.
             let correction = deviation > 0 ? "right" : "left"
             announcer?.speakCaution("You are drifting off course. Turn \(correction) to go straight.")
+            arduino?.extendGreen()
         }
     }
 

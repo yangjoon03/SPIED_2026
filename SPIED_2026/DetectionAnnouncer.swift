@@ -11,9 +11,19 @@ import Foundation
 import AVFoundation
 import Combine
 
+struct AnnouncementLogEntry: Identifiable {
+    let id = UUID()
+    let text: String
+    let timestamp: Date
+}
+
 @MainActor
 final class DetectionAnnouncer: NSObject, ObservableObject {
     @Published var lastAnnouncement = ""
+    /// 가로모드 화면의 음성 로그에 쓰인다. 오래된 게 앞, 최신이 뒤(append)라
+    /// 로그 뷰에서 그대로 위→아래로 그리면 시간 순서가 맞는다.
+    @Published var announcementLog: [AnnouncementLogEntry] = []
+    private static let maxLogEntries = 30
 
     private let synthesizer = AVSpeechSynthesizer()
 
@@ -50,6 +60,10 @@ final class DetectionAnnouncer: NSObject, ObservableObject {
 
     private func speak(_ text: String) {
         lastAnnouncement = text
+        announcementLog.append(AnnouncementLogEntry(text: text, timestamp: Date()))
+        if announcementLog.count > Self.maxLogEntries {
+            announcementLog.removeFirst(announcementLog.count - Self.maxLogEntries)
+        }
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
         synthesizer.speak(utterance)

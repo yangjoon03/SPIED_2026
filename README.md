@@ -49,8 +49,10 @@ AI로 인도·횡단보도를 인식하고, 경로 이탈이나 위험 요소를
                                                     (보행 신호 5초씩 최대 4회 연장)
 ```
 
-- 갤럭시 브릿지/세그멘테이션 서버, 라떼판다 브릿지·아두이노 펌웨어는 이 저장소
-  밖에서 별도로 관리된다. iOS 앱은 이 세 엔드포인트의 IP만 알면 된다.
+- 갤럭시 브릿지 서버 + 세그멘테이션 서버(AI 모델 포함)는 이 저장소의
+  [`galaxy-bridge/`](galaxy-bridge/) 폴더에 있다. 라떼판다 브릿지·아두이노
+  펌웨어는 이 저장소 밖에서 별도로 관리된다. iOS 앱은 이 세 엔드포인트의
+  IP만 알면 된다.
 - `GalaxyBridge.swift` / `WalkingPathView.swift`(카메라·센서, 기본 포트 8080),
   `SegmentationService.swift`(AI 인식 서버, 기본 포트 8002),
   `ArduinoSocket.swift`(횡단보도 신호기 브릿지, 기본 포트 9000) — 세 곳 모두
@@ -79,10 +81,12 @@ AI로 인도·횡단보도를 인식하고, 경로 이탈이나 위험 요소를
 
 1. `SPIED_2026/Secrets.swift.example`을 같은 폴더에 `Secrets.swift`로 복사하고
    Tmap 앱 키를 채운다 (`.gitignore`에 등록되어 git에는 올라가지 않는다).
-2. `GalaxyBridge.swift`, `WalkingPathView.swift`, `SegmentationService.swift`,
+2. [`galaxy-bridge/`](galaxy-bridge/)에서 두 서버를 띄운다 — 자세한 설치/실행
+   방법은 그 폴더의 README 참고.
+3. `GalaxyBridge.swift`, `WalkingPathView.swift`, `SegmentationService.swift`,
    `ArduinoSocket.swift`의 기본 host를 현재 네트워크의 실제 IP로 맞춘다.
-3. Xcode에서 `SPIED_2026.xcodeproj`를 열고 시뮬레이터 또는 실기기에서 실행.
-4. 갤럭시 폰에서 galaxy-bridge 웹앱을 열어 같은 서버로 스트리밍을 시작하면
+4. Xcode에서 `SPIED_2026.xcodeproj`를 열고 시뮬레이터 또는 실기기에서 실행.
+5. 갤럭시 폰에서 galaxy-bridge 웹앱을 열어 같은 서버로 스트리밍을 시작하면
    앱 화면에 카메라 피드가 표시된다.
 
 ### 오프라인 재생 테스트만 하고 싶을 때

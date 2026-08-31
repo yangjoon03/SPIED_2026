@@ -1,0 +1,8 @@
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+
+# 자체서명 HTTPS 인증서/개인키 — 로컬에서 openssl로 직접 생성한다. (아래 README 참고)
+cert.pem
+key.pem

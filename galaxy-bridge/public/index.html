@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Galaxy Bridge</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0d1117; color: #e6edf3; font-family: -apple-system, sans-serif; }
+  header { background: #161b22; padding: 16px; text-align: center; border-bottom: 1px solid #30363d; }
+  header h1 { font-size: 18px; }
+  header span { font-size: 12px; color: #8b949e; }
+  #status-bar { display: flex; gap: 8px; padding: 10px 16px; flex-wrap: wrap; }
+  .badge { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 600; }
+  .badge.connected { background: #1f6feb; }
+  .badge.disconnected { background: #30363d; }
+  #controls { display: flex; gap: 10px; padding: 12px 16px; flex-wrap: wrap; }
+  button { flex: 1; min-width: 100px; padding: 10px; border: none; border-radius: 8px;
+           background: #1f6feb; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:disabled { background: #30363d; color: #8b949e; }
+  button.danger { background: #da3633; }
+  video { width: 100%; background: #000; display: block; max-height: 220px; object-fit: contain; }
+  #sensor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 16px; }
+  .sensor-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px; }
+  .sensor-card h3 { font-size: 11px; color: #8b949e; text-transform: uppercase; margin-bottom: 6px; }
+  .sensor-card p { font-size: 13px; font-family: monospace; color: #58a6ff; }
+  #log { margin: 12px 16px; background: #161b22; border: 1px solid #30363d;
+         border-radius: 8px; padding: 10px; font-size: 11px; font-family: monospace;
+         color: #8b949e; height: 80px; overflow-y: auto; }
+  button.recording { background: #da3633; animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: 0.6; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📡 Galaxy Bridge</h1>
+  <span>센서 & GPS & 카메라 → Xcode</span>
+</header>
+
+<div id="status-bar">
+  <span id="ws-badge" class="badge disconnected">● 연결 안됨</span>
+  <span id="cam-badge" class="badge disconnected">● 카메라 꺼짐</span>
+  <span id="fps-badge" class="badge" style="background:#21262d">0 fps</span>
+  <span id="rec-badge" class="badge disconnected">● 녹화 안함</span>
+</div>
+
+<video id="preview" autoplay playsinline muted></video>
+
+<div id="controls">
+  <button id="btn-cam">📷 카메라</button>
+  <button id="btn-sensor">📡 센서</button>
+  <button id="btn-gps">📍 GPS</button>
+  <button id="btn-stop" class="danger" disabled>■ 중지</button>
+</div>
+
+<div id="controls">
+  <button id="btn-record" disabled>🔴 녹화 시작 (카메라 먼저 켜기)</button>
+</div>
+
+<div id="sensor-grid">
+  <div class="sensor-card">
+    <h3>가속도계 (m/s²)</h3>
+    <p id="acc">-</p>
+  </div>
+  <div class="sensor-card">
+    <h3>자이로스코프 (rad/s)</h3>
+    <p id="gyro">-</p>
+  </div>
+  <div class="sensor-card">
+    <h3>방향 (°)</h3>
+    <p id="orient">-</p>
+  </div>
+  <div class="sensor-card">
+    <h3>전송 속도</h3>
+    <p id="rate">-</p>
+  </div>
+  <div class="sensor-card" style="grid-column: span 2;">
+    <h3>📍 GPS</h3>
+    <p id="gps">-</p>
+  </div>
+
+</div>
+
+<div id="log"></div>
+
+<script>
+const HOST      = location.hostname;
+const WS_URL    = `wss://${HOST}:8080/galaxy`;
+const SENSOR_HZ = 30;
+const CAM_FPS   = 30;
+const IMG_QUALITY = 0.7;
+
+let ws, sensorTimer, camTimer, gpsWatcher, stream;
+let frameCount = 0, lastFpsTime = Date.now();
+
+// ── 녹화(재생 테스트용) 상태 ──────────────────────────────────
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecording = false;
+let recordingStartTime = 0;
+let recordingLog = { sensors: [], gps: [] };
+let recordDrawTimer = null;
+
+const canvas = document.createElement("canvas");
+const ctx    = canvas.getContext("2d");
+
+// MediaRecorder에 원본 카메라 스트림을 바로 물리면 카메라가 몰래 1:1로 전환됐을 때
+// 그대로 녹화돼버린다. AI 프레임 캡처와 동일하게 16:9로 크롭해서 그린 캔버스를
+// captureStream()으로 녹화 대상 삼는다.
+const recordCanvas = document.createElement("canvas");
+const recordCtx    = recordCanvas.getContext("2d");
+
+function log(msg) {
+  const el = document.getElementById("log");
+  el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + el.textContent;
+}
+
+// ── WebSocket ──────────────────────────────────────────────────
+function connectWS() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen  = () => { setBadge("ws-badge", "● 서버 연결됨", true);  log("WebSocket 연결 성공"); };
+  ws.onclose = () => { setBadge("ws-badge", "● 연결 안됨",   false); log("연결 끊김 — 3초 후 재연결"); setTimeout(connectWS, 3000); };
+  ws.onerror = () => log("WebSocket 오류");
+}
+
+function send(payload) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
+}
+
+// ── 카메라 ─────────────────────────────────────────────────────
+async function startCamera() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: "environment",
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        aspectRatio: { ideal: 16 / 9 }
+      },
+      audio: false
+    });
+    const video = document.getElementById("preview");
+    video.srcObject = stream;
+    setBadge("cam-badge", "● 카메라 ON", true);
+
+    const settings = stream.getVideoTracks()[0].getSettings();
+    log(`카메라 시작 (${settings.width}x${settings.height}, 요청: 16:9)`);
+
+    camTimer = setInterval(() => captureFrame(video), 1000 / CAM_FPS);
+    const recordBtn = document.getElementById("btn-record");
+    recordBtn.disabled = false;
+    recordBtn.textContent = "🔴 녹화 시작";
+  } catch (e) {
+    log("카메라 오류: " + e.message);
+  }
+}
+
+const TARGET_ASPECT = 16 / 9;
+
+// 카메라가 촬영 도중 다른 센서 모드(예: 저조도에서 정사각형 크롭)로 몰래 전환해도
+// 항상 16:9로 중앙 크롭할 수 있게, AI 프레임 캡처와 녹화가 공유하는 크롭 계산.
+function computeCropRect(srcW, srcH) {
+  let cropW = srcW, cropH = srcH, cropX = 0, cropY = 0;
+  if (srcW / srcH > TARGET_ASPECT) {
+    cropW = Math.round(srcH * TARGET_ASPECT);
+    cropX = Math.round((srcW - cropW) / 2);
+  } else if (srcW / srcH < TARGET_ASPECT) {
+    cropH = Math.round(srcW / TARGET_ASPECT);
+    cropY = Math.round((srcH - cropH) / 2);
+  }
+  return { cropW, cropH, cropX, cropY };
+}
+
+function captureFrame(video) {
+  if (video.readyState < 2) return;
+  const srcW = video.videoWidth  || 1920;
+  const srcH = video.videoHeight || 1080;
+  const { cropW, cropH, cropX, cropY } = computeCropRect(srcW, srcH);
+
+  canvas.width  = cropW;
+  canvas.height = cropH;
+  ctx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  const b64 = canvas.toDataURL("image/jpeg", IMG_QUALITY).split(",")[1];
+  send({ type: "camera", ts: Date.now(), data: b64, width: canvas.width, height: canvas.height });
+
+  frameCount++;
+  const now = Date.now();
+  if (now - lastFpsTime >= 1000) {
+    document.getElementById("fps-badge").textContent = frameCount + " fps";
+    frameCount = 0; lastFpsTime = now;
+  }
+}
+
+// ── 센서 ───────────────────────────────────────────────────────
+let sensorData = {};
+
+function startSensors() {
+  if (typeof DeviceMotionEvent !== "undefined") {
+    if (DeviceMotionEvent.requestPermission) {
+      DeviceMotionEvent.requestPermission().then(r => { if (r === "granted") listenMotion(); });
+    } else {
+      listenMotion();
+    }
+  }
+  if (typeof DeviceOrientationEvent !== "undefined") {
+    window.addEventListener("deviceorientation", (e) => {
+      sensorData.orientation = { alpha: round(e.alpha), beta: round(e.beta), gamma: round(e.gamma) };
+      document.getElementById("orient").textContent = `α:${round(e.alpha)} β:${round(e.beta)} γ:${round(e.gamma)}`;
+    });
+  }
+  sensorTimer = setInterval(flushSensors, 1000 / SENSOR_HZ);
+  log("센서 시작");
+}
+
+function listenMotion() {
+  window.addEventListener("devicemotion", (e) => {
+    const a = e.accelerationIncludingGravity;
+    const g = e.rotationRate;
+    if (a) {
+      sensorData.accelerometer = { x: round(a.x), y: round(a.y), z: round(a.z) };
+      document.getElementById("acc").textContent = `x:${round(a.x)} y:${round(a.y)} z:${round(a.z)}`;
+    }
+    if (g) {
+      sensorData.gyroscope = { x: round(g.alpha), y: round(g.beta), z: round(g.gamma) };
+      document.getElementById("gyro").textContent = `α:${round(g.alpha)} β:${round(g.beta)} γ:${round(g.gamma)}`;
+    }
+  });
+}
+
+function flushSensors() {
+  if (Object.keys(sensorData).length > 0) {
+    const ts = Date.now();
+    send({ type: "sensors", ts, ...sensorData });
+    document.getElementById("rate").textContent = SENSOR_HZ + " Hz";
+    if (isRecording) recordingLog.sensors.push({ type: "sensors", ts, ...sensorData });
+  }
+}
+
+// ── GPS ────────────────────────────────────────────────────────
+function startGPS() {
+  if (!navigator.geolocation) { log("GPS 지원 안됨"); return; }
+  gpsWatcher = navigator.geolocation.watchPosition(
+    (pos) => {
+      const { latitude, longitude, altitude, accuracy, speed, heading } = pos.coords;
+      const ts = Date.now();
+      const payload = { type: "gps", ts,
+             latitude:  roundGPS(latitude),
+             longitude: roundGPS(longitude),
+             altitude:  round(altitude),
+             accuracy:  round(accuracy),
+             speed:     round(speed),
+             heading:   round(heading) };
+      send(payload);
+      if (isRecording) recordingLog.gps.push(payload);
+      document.getElementById("gps").textContent =
+        `lat:${roundGPS(latitude)}  lon:${roundGPS(longitude)}` +
+        (speed  != null ? `  spd:${round(speed)}m/s` : "") +
+        `  acc:±${round(accuracy)}m`;
+    },
+    (err) => log("GPS 오류: " + err.message),
+    { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+  );
+  log("GPS 시작");
+}
+
+
+
+// ── 녹화 (재생 테스트용: 동영상 + 센서/GPS 타임라인) ─────────────
+function toggleRecording() {
+  if (isRecording) stopRecording(); else startRecording();
+}
+
+function startRecording() {
+  if (!stream) { log("카메라를 먼저 켜주세요"); return; }
+
+  const video = document.getElementById("preview");
+  const initRect = computeCropRect(video.videoWidth || 1920, video.videoHeight || 1080);
+  recordCanvas.width  = initRect.cropW;
+  recordCanvas.height = initRect.cropH;
+
+  // 원본 카메라 스트림을 그대로 녹화하면 카메라가 몰래 1:1로 전환됐을 때 그대로
+  // 녹화돼버리므로, captureFrame()과 동일하게 16:9로 크롭해서 그린 캔버스를
+  // 매 프레임 갱신하고 그 캔버스의 스트림을 녹화 대상으로 쓴다.
+  recordDrawTimer = setInterval(() => {
+    if (video.readyState < 2) return;
+    const { cropW, cropH, cropX, cropY } = computeCropRect(video.videoWidth || 1920, video.videoHeight || 1080);
+    if (recordCanvas.width !== cropW || recordCanvas.height !== cropH) {
+      recordCanvas.width  = cropW;
+      recordCanvas.height = cropH;
+    }
+    recordCtx.drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  }, 1000 / CAM_FPS);
+
+  const recordStream = recordCanvas.captureStream(CAM_FPS);
+
+  // iOS(AVFoundation)가 바로 읽을 수 있게 mp4/h264를 최우선으로 시도하고,
+  // 폰 브라우저가 그걸 못 만들면(구형 크롬 등) webm으로 자연스럽게 폴백한다.
+  // -> mp4로 녹화되면 나중에 ffmpeg 변환 단계 자체가 필요 없어진다.
+  const mimeCandidates = [
+    "video/mp4;codecs=avc1.640028",
+    "video/mp4;codecs=h264",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+  const mimeType = mimeCandidates.find(t => MediaRecorder.isTypeSupported(t)) || "";
+
+  try {
+    mediaRecorder = mimeType ? new MediaRecorder(recordStream, { mimeType }) : new MediaRecorder(recordStream);
+  } catch (e) {
+    log("녹화 시작 실패: " + e.message);
+    clearInterval(recordDrawTimer);
+    recordDrawTimer = null;
+    return;
+  }
+  log(`녹화 형식: ${mediaRecorder.mimeType || "(브라우저 기본값)"}`);
+
+  recordedChunks = [];
+  recordingLog = { sensors: [], gps: [] };
+  recordingStartTime = Date.now();
+
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = finalizeRecording;
+  mediaRecorder.start(1000); // 1초마다 청크 flush (장시간 녹화 시 메모리 절약)
+
+  isRecording = true;
+  setBadge("rec-badge", "● 녹화 중", true);
+  const btn = document.getElementById("btn-record");
+  btn.textContent = "⏹ 녹화 중지";
+  btn.classList.add("recording");
+  log("녹화 시작 — 영상 + 센서/GPS 타임라인 동시 기록");
+}
+
+function stopRecording() {
+  if (!mediaRecorder) return;
+  mediaRecorder.stop();
+  if (recordDrawTimer) { clearInterval(recordDrawTimer); recordDrawTimer = null; }
+  isRecording = false;
+  setBadge("rec-badge", "● 녹화 안함", false);
+  const btn = document.getElementById("btn-record");
+  btn.textContent = "🔴 녹화 시작";
+  btn.classList.remove("recording");
+}
+
+function finalizeRecording() {
+  const mimeType = mediaRecorder.mimeType || "video/webm";
+  const videoBlob = new Blob(recordedChunks, { type: mimeType });
+  const stamp = new Date(recordingStartTime).toISOString().replace(/[:.]/g, "-");
+  const baseName = `galaxy-recording_${stamp}`;
+  // 실제로 녹화된 포맷에 맞춰 확장자를 정한다 (mp4로 녹화됐으면 .mp4 그대로 사용,
+  // 폰이 mp4를 못 만들어서 webm으로 폴백됐으면 .webm 유지).
+  const videoExt = mimeType.startsWith("video/mp4") ? "mp4" : "webm";
+  const videoFileName = `${baseName}.${videoExt}`;
+
+  downloadBlob(videoBlob, videoFileName);
+
+  const dataLog = {
+    startTime: recordingStartTime,
+    endTime: Date.now(),
+    videoFile: videoFileName,
+    // 녹화 대상은 원본 카메라가 아니라 16:9로 크롭해서 그린 recordCanvas이므로
+    // 그 실제 크기를 기록한다(stream.getSettings()는 원본 카메라 크기라 다를 수 있음).
+    videoWidth: recordCanvas.width,
+    videoHeight: recordCanvas.height,
+    camFps: CAM_FPS,
+    sensorHz: SENSOR_HZ,
+    sensors: recordingLog.sensors,
+    gps: recordingLog.gps,
+  };
+  const jsonBlob = new Blob([JSON.stringify(dataLog, null, 2)], { type: "application/json" });
+  downloadBlob(jsonBlob, `${baseName}.json`);
+
+  log(`녹화 저장됨: ${videoFileName} + .json (센서 ${recordingLog.sensors.length}개, GPS ${recordingLog.gps.length}개)`);
+  recordedChunks = [];
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+// ── 중지 ───────────────────────────────────────────────────────
+function stopAll() {
+  if (isRecording) stopRecording();
+  clearInterval(sensorTimer);
+  clearInterval(camTimer);
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  if (gpsWatcher != null) navigator.geolocation.clearWatch(gpsWatcher);
+  setBadge("cam-badge", "● 카메라 꺼짐", false);
+  document.getElementById("fps-badge").textContent = "0 fps";
+  document.getElementById("gps").textContent = "-";
+  document.getElementById("rate").textContent = "-";
+  const recordBtn = document.getElementById("btn-record");
+  recordBtn.disabled = true;
+  recordBtn.textContent = "🔴 녹화 시작 (카메라 먼저 켜기)";
+  log("전송 중지");
+}
+
+function round(v)    { return v != null ? Math.round(v * 100) / 100 : null; }
+function roundGPS(v) { return v != null ? Math.round(v * 1000000) / 1000000 : null; }
+
+function setBadge(id, text, on) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = "badge " + (on ? "connected" : "disconnected");
+}
+
+document.getElementById("btn-cam").onclick    = () => { startCamera();  document.getElementById("btn-stop").disabled = false; };
+document.getElementById("btn-sensor").onclick = () => { startSensors(); document.getElementById("btn-stop").disabled = false; };
+document.getElementById("btn-gps").onclick    = () => { startGPS();     document.getElementById("btn-stop").disabled = false; };
+document.getElementById("btn-stop").onclick   = stopAll;
+document.getElementById("btn-record").onclick = toggleRecording;
+
+connectWS();
+</script>
+</body>
+</html>
